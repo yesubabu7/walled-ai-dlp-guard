@@ -59,12 +59,14 @@
     } else if (body instanceof Blob) {
       // Real uploads are File objects or large binary blobs; small/JSON blobs are usually
       // the site's own telemetry, so read those as text instead of asking the agent.
+      // Binary non-File blobs are only treated as uploads when PUT (direct-to-storage
+      // uploads); binary POSTs are typically compressed analytics.
       if (body instanceof File) out.files.push(body);
       else if (body.size <= MAX_TEXT_BYTES) {
         const text = await body.text();
         if (looksLikeText(text)) out.text = text;
-        else if (body.size >= MIN_BLOB_UPLOAD_BYTES) out.files.push(body);
-      } else out.files.push(body);
+        else if (/^PUT$/i.test(method) && body.size >= MIN_BLOB_UPLOAD_BYTES) out.files.push(body);
+      } else if (/^PUT$/i.test(method)) out.files.push(body);
     } else if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
       const bytes = body instanceof ArrayBuffer ? new Uint8Array(body) : new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
       if (bytes.byteLength <= MAX_TEXT_BYTES) {

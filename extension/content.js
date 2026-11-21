@@ -113,8 +113,14 @@
     }
   }
 
+  // After a check, the site's own follow-up requests (the actual send/upload) must not be
+  // asked about again. The grant is recorded here *and* forwarded to page_hook.js: the
+  // forwarded copy can arrive a moment after the site starts uploading, so questions from
+  // page_hook are also answered from this local record (no race).
+  const grantedUntil = { text: 0, file: 0 };
   function grant(kind, ms) {
-    window.postMessage({ source: "walled-dlp-content", type: "approve", kind, until: Date.now() + ms }, location.origin);
+    grantedUntil[kind] = Date.now() + ms;
+    window.postMessage({ source: "walled-dlp-content", type: "approve", kind, until: grantedUntil[kind] }, location.origin);
   }
 
   // ------------------------------------------------------------------ prompts
@@ -323,7 +329,9 @@
     const m = e.data;
     if (e.source !== window || !m || m.source !== "walled-dlp-page") return;
     let decision = "block";
-    if (m.kind === "text") {
+    if ((m.kind === "text" || m.kind === "file") && Date.now() <= grantedUntil[m.kind]) {
+      decision = "allow"; // already checked by layer 1 moments ago
+    } else if (m.kind === "text") {
       decision = (await decidePrompt(String(m.text || ""))).decision;
     } else if (m.kind === "file" && m.blob instanceof Blob) {
       const file = m.blob instanceof File ? m.blob : new File([m.blob], m.name || "upload", { type: m.blob.type });
