@@ -27,7 +27,9 @@
     perplexity: {
       composer: '[data-lexical-editor="true"], #ask-input, textarea[placeholder], [contenteditable="true"][role="textbox"]',
       send: 'button[aria-label="Submit"], button[data-testid="submit-button"]',
-      responses: ['[data-renderer="lm"]', '[id^="markdown-content"]'],
+      // The user's own question is rendered with data-renderer="lm" too, but inside a
+      // [data-message-bubble] - exclude it so only AI-generated text is recoloured.
+      responses: ['[data-renderer="lm"]:not([data-message-bubble] *)', '[id^="markdown-content"]'],
     },
   };
   const CFG = SITES[SITE];
