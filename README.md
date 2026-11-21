@@ -7,9 +7,10 @@ text colour of AI-generated responses on both sites.
 
 ![Native Continue / Cancel dialog](docs/native_dialog.png)
 
-> **Demo video (3 min):** https://youtu.be/kyDuLdecI3k
-> Shows prompts and text/PDF/image uploads on ChatGPT and Perplexity: the native dialog appears before sending,
-> Cancel blocks and Continue sends, clean files pass, and AI answers are recoloured.
+> **Demo video (6 min):** https://youtu.be/q5yKe7JxKsk
+> Covers every acceptance criterion on both ChatGPT and Perplexity: clean prompts pass without a dialog, prompts
+> and text/PDF/image files containing the marker show the native dialog before sending, Cancel blocks and Continue
+> proceeds, clean files pass, and AI answers are recoloured. (The text-file part starts at 4:46.)
 > Built for the Walled AI take-home assignment (final screening round).
 
 ---
