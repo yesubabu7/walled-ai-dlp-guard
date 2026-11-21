@@ -11,7 +11,13 @@
   if (window.__walledDlpHook) return;
   Object.defineProperty(window, "__walledDlpHook", { value: true });
 
-  const W = globalThis.WalledDLP;
+  // Chrome injects a given file only once per frame, so common.js (used by content.js in the
+  // isolated world) is not available here. Same rules, inlined; tests/js checks they agree.
+  const FIXES = { "0": "O", "1": "I", "5": "S", "|": "I", "$": "S" };
+  const W = {
+    containsMarker: (text) => Boolean(text) &&
+      String(text).toUpperCase().replace(/[015|$]/g, (c) => FIXES[c]).replace(/[^A-Z0-9]/g, "").includes("WALLEDSENSITIVE"),
+  };
   const MAX_TEXT_BYTES = 2_000_000;
   const MIN_BLOB_UPLOAD_BYTES = 1024;
   const grants = { text: 0, file: 0 };
@@ -70,6 +76,20 @@
     return out;
   }
 
+  // Request bodies are usually JSON; show the user the strings that carry the marker
+  // (their prompt) rather than the raw payload.
+  function readable(text) {
+    try {
+      const hits = [];
+      (function walk(v) {
+        if (typeof v === "string") { if (W.containsMarker(v)) hits.push(v); }
+        else if (v && typeof v === "object") Object.values(v).forEach(walk);
+      })(JSON.parse(text));
+      if (hits.length) return hits.join("\n");
+    } catch (_) { /* not JSON */ }
+    return text;
+  }
+
   async function allowed(body, method) {
     let parts;
     try {
@@ -79,7 +99,7 @@
       return true; // inspection bugs must not break the site; layer 1 is the primary control
     }
     if (parts.text.length <= MAX_TEXT_BYTES && W.containsMarker(parts.text) && Date.now() > grants.text) {
-      if ((await ask("text", { text: parts.text.slice(0, 200_000) })) !== "allow") return false;
+      if ((await ask("text", { text: readable(parts.text).slice(0, 200_000) })) !== "allow") return false;
     }
     for (const file of parts.files) {
       if (Date.now() <= grants.file) break;

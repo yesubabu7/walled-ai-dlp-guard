@@ -59,7 +59,7 @@ function loadPage(decide) {
 
   const ctx = vm.createContext(win);
   pageWindow = vm.runInContext("window", ctx);
-  vm.runInContext(read("common.js"), ctx);
+  // Like Chrome: page_hook.js runs on its own, without common.js.
   vm.runInContext(read("page_hook.js"), ctx);
   return { win, asked, fetched, xhrs, grant: (kind) => deliver({ source: "walled-dlp-content", type: "approve", kind, until: Date.now() + 60_000 }) };
 }
@@ -90,6 +90,15 @@ test("a recent UI approval is not asked again", async () => {
   page.grant("text");
   await page.win.fetch("/conversation", { method: "POST", body: "WALLED_SENSITIVE" });
   assert.equal(page.asked.length, 0);
+});
+
+test("page_hook's inlined matcher agrees with common.js", async () => {
+  const W = loadCommon();
+  for (const t of ["walled sensitive", "WALLED-\nSENSITIVE", "WALLED_5ENSITIVE", "walled garden", "plain"]) {
+    const page = loadPage(() => "allow");
+    await page.win.fetch("/x", { method: "POST", body: t });
+    assert.equal(page.asked.length > 0, W.containsMarker(t), t);
+  }
 });
 
 test("GET requests are never inspected", async () => {

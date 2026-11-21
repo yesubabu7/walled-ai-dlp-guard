@@ -63,6 +63,21 @@ function ask(payload, timeoutMs = REQUEST_TIMEOUT_MS) {
   });
 }
 
+// Chrome only injects content scripts into pages loaded after install. Tabs that were already
+// open would be unprotected until refreshed, so inject into them now. (The fetch/XHR hook is
+// late in these tabs; the UI interception in content.js still applies.)
+const SITE_PATTERNS = ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://www.perplexity.ai/*", "https://perplexity.ai/*"];
+chrome.runtime.onInstalled.addListener(async () => {
+  for (const tab of await chrome.tabs.query({ url: SITE_PATTERNS })) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["page_hook.js"], world: "MAIN" });
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["common.js", "content.js"] });
+    } catch (err) {
+      console.warn("could not inject into tab", tab.id, err);
+    }
+  }
+});
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "dlp-check") {
     ask(msg.payload).then(sendResponse);

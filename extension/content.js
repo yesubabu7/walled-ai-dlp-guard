@@ -21,7 +21,8 @@
     chatgpt: {
       composer: '#prompt-textarea, textarea[name="prompt"], [contenteditable="true"][role="textbox"], .ProseMirror[contenteditable="true"]',
       send: '[data-testid="send-button"], #composer-submit-button, button[aria-label="Send message"], button[aria-label="Send prompt"]',
-      responses: ['[data-message-author-role="assistant"]', "[data-assistant-markdown-root]"],
+      // logged-in (2026 "DIL" renderer), logged-out, and the older message layout
+      responses: ["[data-dil-response]", '[data-message-author-role="assistant"]', "[data-assistant-markdown-root]"],
     },
     perplexity: {
       composer: '[data-lexical-editor="true"], #ask-input, textarea[placeholder], [contenteditable="true"][role="textbox"]',
@@ -46,9 +47,13 @@
   // ------------------------------------------------------------------ AI response colour
 
   function installStyle() {
+    const all = CFG.responses.map((s) => `${s}, ${s} *`).join(",\n");
+    // ChatGPT's streaming renderer colours text through per-span CSS variables set inline,
+    // so override those too (a stylesheet !important beats a non-important inline style).
     const css =
-      CFG.responses.map((s) => `${s}, ${s} *`).join(",\n") +
-      ` { color: var(--walled-ai-response-color, ${DEFAULT_COLOR}) !important; }`;
+      `${all} { color: var(--walled-ai-response-color, ${DEFAULT_COLOR}) !important;\n` +
+      `  --d-stream-ink: var(--walled-ai-response-color, ${DEFAULT_COLOR}) !important;\n` +
+      `  --d-stream-enter-ink: var(--walled-ai-response-color, ${DEFAULT_COLOR}) !important; }`;
     const ensure = () => {
       if (document.getElementById("walled-dlp-style")) return;
       const style = document.createElement("style");
