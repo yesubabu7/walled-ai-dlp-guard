@@ -1,6 +1,5 @@
 """Logging to logs/agent.log and stderr.
 
-stdout is the Chrome native-messaging channel, so nothing may ever be logged there.
 As a DLP tool we log metadata only (site, kind, file name, size, decision) - never the
 prompt text or file contents.
 """

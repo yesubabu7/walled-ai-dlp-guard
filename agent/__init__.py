@@ -1,3 +1,3 @@
-"""Walled DLP Guard desktop agent: scans prompts/files for WALLED_SENSITIVE and asks the user."""
+"""Walled DLP Guard: standalone desktop DLP for ChatGPT and Perplexity (local HTTPS proxy)."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

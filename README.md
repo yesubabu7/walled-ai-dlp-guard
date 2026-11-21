@@ -1,265 +1,218 @@
 # Walled DLP Guard
 
-**A lightweight desktop DLP (data loss prevention) app for ChatGPT and Perplexity.** It checks every prompt and
-every uploaded file (text, PDF and image) for the marker **`WALLED_SENSITIVE`**. When the marker is found, it
-shows a **native Windows Continue / Cancel dialog** *before* anything leaves the browser. It also changes the
-text colour of AI-generated responses on both sites.
+**A standalone desktop DLP (data loss prevention) application for ChatGPT and Perplexity.** It inspects every
+prompt and every uploaded file (text, PDF and image) for the marker **`WALLED_SENSITIVE`**. When the marker is
+found, it shows a **native Windows Continue / Cancel dialog** *before* the data leaves the computer. It also changes
+the text colour of AI-generated responses on both sites.
+
+**Nothing is installed in the browser:** no extension, plugin or add-on. The app works at the network level, as a
+local HTTPS proxy, the same way enterprise DLP agents do.
 
 ![Native Continue / Cancel dialog](docs/native_dialog.png)
 
-> **Demo video (6 min):** https://youtu.be/q5yKe7JxKsk
-> Covers every acceptance criterion on both ChatGPT and Perplexity: clean prompts pass without a dialog, prompts
-> and text/PDF/image files containing the marker show the native dialog before sending, Cancel blocks and Continue
-> proceeds, clean files pass, and AI answers are recoloured. (The text-file part starts at 4:46.)
-> Built for the Walled AI take-home assignment (final screening round).
+> **Demo video:** _link added after recording_ · Built for the Walled AI take-home assignment (screening round 2).
 
 ---
 
 ## Contents
 
-1. [What it does](#what-it-does)
-2. [Architecture](#architecture)
-3. [How interception works](#how-interception-works)
-4. [Detection](#detection-text-pdf-images)
+1. [How it works](#how-it-works)
+2. [Interception and enforcement](#interception-and-enforcement)
+3. [Content inspection](#content-inspection-text-pdf-images)
+4. [Response colour](#response-colour)
 5. [Installation](#installation)
-6. [Try it](#try-it)
+6. [Usage](#usage)
 7. [Security and reliability](#security-and-reliability)
 8. [Testing](#testing)
 9. [Project layout](#project-layout)
-10. [Limitations and future work](#limitations-and-future-work)
+10. [Limitations and trade-offs](#limitations-and-trade-offs)
 
 ---
 
-## What it does
+## How it works
 
-| Requirement | Implementation |
+```
+ Browser (Chrome / Edge, unchanged)
+      │  Windows proxy auto-config (PAC) served by the app:
+      │  only chatgpt.com, perplexity.ai and their upload storage → proxy; everything else → DIRECT
+      ▼
+ ┌───────────────────────── Walled DLP Guard (Python desktop app) ─────────────────────────┐
+ │ local proxy 127.0.0.1:8899 (mitmproxy engine)                                             │
+ │   TLS decrypted only for the AI sites (local CA the user trusts during setup)            │
+ │   ┌───────────────┐   ┌────────────────────────┐   ┌──────────────────────────────────┐   │
+ │   │ dlp_proxy.py  │──►│ scanner.py             │──►│ dialog.py                        │   │
+ │   │ hold request, │   │ text · PDF (pypdf)     │   │ native Windows MessageBox        │   │
+ │   │ classify      │   │ OCR (Tesseract)        │   │ Continue / Cancel                │   │
+ │   └───────┬───────┘   └────────────────────────┘   └──────────────────────────────────┘   │
+ │           │ Continue → forward original bytes · Cancel → 403, nothing sent                 │
+ │           │ HTML responses → <style> that recolours AI answers                             │
+ │ tray icon · PAC server · proxy settings saved and restored                                 │
+ └───────────┼──────────────────────────────────────────────────────────────────────────────┘
+             ▼
+     chatgpt.com · perplexity.ai · their file storage
+```
+
+**Why a proxy:** a desktop app can't see what is typed inside a web page, but everything the page *sends* goes
+over the network. Inspecting it at the proxy works in any browser, with no browser add-on, and before the data
+reaches the AI service.
+
+---
+
+## Interception and enforcement
+
+Every request to ChatGPT/Perplexity is **held** by the proxy while it is inspected (`agent/dlp_proxy.py`):
+
+| Request | What happens |
 |---|---|
-| Monitor text prompts on ChatGPT and Perplexity | The Enter key, Send button and form submit are intercepted *before* the site handles them |
-| Monitor file uploads (text, PDF, image) | The file picker, drag and drop, and paste are held until the desktop agent has scanned each file |
-| Detect `WALLED_SENSITIVE` | Text: direct match. PDF: text layer, plus **OCR of scanned pages**. Images: **Tesseract OCR** (also dark-mode screenshots) |
-| Native desktop Continue / Cancel dialog | A real Windows `MessageBox` (user32), always on top, **Cancel is the default**, and it auto-cancels after 2 minutes |
-| Action proceeds only on Continue | Cancel means the prompt or file never reaches the site. Continue replays the original action |
-| Change the colour of AI-generated responses | Injected CSS recolours only the AI's answers (default orange, configurable in the popup). The user's own messages are unchanged |
+| Prompt submission (ChatGPT `…/conversation`, Perplexity `…/perplexity_ask`) **without** the marker | Forwarded immediately, with no dialog |
+| Prompt submission **with** the marker | Native dialog. **Continue** forwards the *original, unmodified* request. **Cancel** answers it locally with `403`, so nothing reaches the site. ChatGPT keeps the text in the input box, so the user can edit and retry. |
+| File upload (multipart parts, or a raw `PUT`/`POST` to the storage host) | The file is scanned. If the marker is found, a dialog appears; Cancel blocks the upload and the user can re-attach later |
+| Side requests carrying the prompt (analytics, search suggestions, Perplexity's live typing suggestions over WebSocket) | Never get their own dialog. They **follow the user's decision** for that prompt, and are **dropped while no decision exists**, so the text cannot leak early |
 
-**Verified end to end in logged-in Chrome** (Windows 11), on both **chatgpt.com** and **perplexity.ai**: prompts,
-text and scanned PDFs, PNG screenshots, clean files passing without a dialog, and recoloured answers.
+Details that make this reliable:
 
----
-
-## Architecture
-
-Python alone can't reliably see what is typed or attached inside a web page, and the page can't show a native
-desktop dialog. So the work is split between a **browser extension** (the sensor) and a **Python desktop
-agent** (the decision maker). They connect through **Chrome Native Messaging**: Chrome launches the agent and
-talks to it over stdin/stdout, so no network port is opened.
-
-```
- chatgpt.com / perplexity.ai tab
- ┌──────────────────────────────────────────────────────────────┐
- │ content.js (isolated world)            page_hook.js (page world)│
- │  layer 1: Enter / Send / file picker /   layer 2: fetch + XHR    │
- │  drag-drop / paste held in the capture   wrapped at document_start│
- │  phase; recolours AI answers (CSS)       (backstop)               │
- └──────────────┬───────────────────────────────────┬──────────────┘
-                │ chrome.runtime messages            │ window.postMessage
-                ▼                                    │ (asks content.js)
-      background.js (service worker) ◄───────────────┘
-                │ chrome.runtime.connectNative("com.walled.dlp_guard")
-                ▼ length-prefixed JSON over stdin/stdout
- ┌──────────────────────────────────────────────────────────────┐
- │ Python desktop agent (agent/host.py)                           │
- │  scanner.py: text · PDF (pypdf) · OCR (Tesseract) · Office XML │
- │  dialog.py:  native Windows Continue / Cancel                  │
- │  tray.py:    tray icon (checks / flagged counts)               │
- └──────────────────────────────────────────────────────────────┘
-```
+- **One dialog per prompt or file.** Concurrent and repeated requests with the same content share one answer
+  (keyed by the normalised prompt, or the file's SHA-256). After Cancel, the same prompt asks again if the user
+  resubmits.
+- **Uploads go to object storage, not the chat host.** The app learns the storage host and the original file name
+  from the site's own "create upload" response, so the dialog shows the real file name.
+- **Responses stream normally.** Streamed answers (SSE) are passed straight through; only HTML pages are buffered,
+  for recolouring.
+- **Narrow decryption.** Only ChatGPT, Perplexity and their upload hosts are decrypted. Other traffic routed by the
+  PAC is tunnelled untouched, and everything else never touches the app.
 
 ---
 
-## How interception works
+## Content inspection: text, PDF, images
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant P as Page (ChatGPT / Perplexity)
-    participant C as content.js
-    participant A as Desktop agent
-    U->>P: types prompt with WALLED_SENSITIVE, presses Enter
-    C->>C: capture-phase listener runs first, stops the event
-    C->>A: check_text (via background.js, Native Messaging)
-    A->>U: native dialog: Continue / Cancel
-    alt Cancel
-        A-->>C: block, prompt stays unsent in the box
-    else Continue
-        A-->>C: allow
-        C->>P: replays the send (clicks Send), site sends normally
-    end
-```
+`agent/scanner.py` detects file type by **content** (magic bytes), not by name.
 
-- **Layer 1 (`content.js`): intercepting user actions.** Listeners on `window` in the **capture phase** run
-  before the site's own handlers.
-  - **Prompts:** Enter, the Send/Submit button and form `submit` are stopped *only* if the prompt contains the
-    marker. Clean prompts are never delayed.
-  - **Files:** every file from the picker (`change`/`input`), drag and drop, or paste is held and sent to the
-    agent for scanning. Allowed files are re-delivered by re-dispatching the original event with a rebuilt
-    `DataTransfer`; blocked files are dropped. Several files are checked one at a time, each with its own
-    decision.
-  - **Agent unreachable:** fail closed, meaning the action is blocked and an in-page message explains why.
-- **Layer 2 (`page_hook.js`): network backstop.** It runs in the page's own JavaScript world at
-  `document_start`, before the site can keep a private copy, and wraps `fetch` and `XMLHttpRequest`.
-  - **Text:** any outgoing body containing the marker is held until a decision is made.
-  - **Files:** any uploaded `File` (in `FormData` or a direct `PUT`) is held the same way. This catches paths
-    layer 1 might miss when a site changes its UI.
-  - **No double prompts:** a short "grant" after a layer-1 decision keeps the site's follow-up requests from
-    being asked about twice.
-- **Response colouring:** CSS with `!important` targets only the AI-answer containers. ChatGPT also colours
-  text through per-span CSS variables (`--d-stream-ink`), which are overridden too. The user's own messages are
-  explicitly excluded.
-
-Selectors were checked against the **live** sites (logged in and logged out). Several variants are kept per site
-because the layouts differ.
-
----
-
-## Detection: text, PDF, images
-
-`agent/scanner.py` decides the file type from its **content** (magic bytes), not its name.
-
-| Content | How it is scanned |
+| Content | Method |
 |---|---|
-| Text files (`.txt`, `.md`, `.csv`, `.json`, code…) | Decoded (UTF-8 / UTF-16) and matched |
-| PDF | `pypdf` text layer per page. If there's no match, the embedded images are **OCR'd** (for scanned PDFs) |
-| Images (PNG, JPEG, GIF, BMP, TIFF, WebP) | **Tesseract OCR** in up to three passes: grayscale and upscaled, then thresholded, then **inverted** for light-on-dark screenshots |
-| Office (`.docx`/`.xlsx`/`.pptx`), as a bonus | The XML parts inside the zip are scanned |
+| Prompts and text files | Decoded and matched. JSON and form bodies are walked string by string |
+| PDF | `pypdf` text layer per page. If there's no match, the embedded images are **OCR'd** (scanned PDFs) |
+| Images (PNG, JPEG, GIF, BMP, TIFF, WebP) | **Tesseract OCR** in up to 3 passes: grayscale/upscaled, then thresholded, then inverted for dark-mode screenshots |
+| Office (`.docx/.xlsx/.pptx`), as a bonus | The XML inside the zip is scanned |
 
-Matching is deliberately tolerant, because a DLP tool should prefer catching too much over too little. It is
-case-insensitive, ignores spaces, underscores and line breaks, and maps common OCR confusions (`0→O`, `1→I`,
-`5→S`). So `walled sensitive`, `WALLED_\nSENSITIVE` and an OCR'd `WALLED_5ENSITIVE` all match. The rules are
-identical in Python and JavaScript, and tests check that they agree.
+Matching is tolerant: case-insensitive, ignoring spaces, underscores and line breaks, and common OCR confusions
+(`0→O`, `1→I`, `5→S`). Files that can't be inspected (password-protected, too large, OCR missing) also get a dialog
+instead of being silently allowed.
 
-If a PDF or image can't be inspected (password-protected, OCR not installed, or larger than 40 MB), the user is
-asked with an explanation; it is never silently allowed.
+The dialog says clearly **whether a prompt or a file** triggered it, and shows **the prompt text or the file name**
+(plus where the marker was found, e.g. "page 1 text" or "OCR").
+
+---
+
+## Response colour
+
+The proxy adds a `<style>` to the HTML of chatgpt.com and perplexity.ai. It targets only the AI answer containers
+(ChatGPT `[data-dil-response]` / `[data-message-author-role=assistant]`; Perplexity `[data-renderer=lm]`, excluding
+the user's own question bubble). ChatGPT's streaming renderer colours text through CSS variables
+(`--d-stream-ink`), which are overridden too. If a page's Content-Security-Policy forbade inline styles, the app
+would add a nonce for its own style only. The colour is configurable: `--color "#22c55e"`.
 
 ---
 
 ## Installation
 
-Requirements: Windows 10/11, **Python 3.10+** (tested with 3.14), Google Chrome (or Edge), and **Tesseract OCR**
-for images.
+Requirements: **Windows 10/11**, **Python 3.10+** (tested with 3.14), Chrome or Edge, and **Tesseract OCR**.
 
 ```bash
 git clone https://github.com/yesubabu7/walled-ai-dlp-guard.git
 cd walled-ai-dlp-guard
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-winget install --id UB-Mannheim.TesseractOCR      # OCR engine (one time)
-python scripts\install.py                         # register the agent with Chrome and Edge (per user)
+winget install --id UB-Mannheim.TesseractOCR      # OCR engine for images and scanned PDFs (one time)
+setup.bat                                          # venv + packages + trust the local certificate
 ```
 
-`install.py` writes `native/walled_dlp_host.bat` and the host manifest, and registers the host under
-`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.walled.dlp_guard`. Only this extension's fixed ID may
-connect (`allowed_origins`). Run it from a normal terminal: sandboxed app terminals (for example a Microsoft Store
-app's) may have their registry writes virtualised, so Chrome won't see them. To undo:
-`python scripts\install.py --uninstall`.
+`setup.bat` runs `python dlp_guard.py --setup`. This creates a local certificate authority in
+`%LOCALAPPDATA%\WalledDLPGuard` and adds it to the **current user's** trusted roots with `certutil`. Windows shows a
+confirmation dialog; click **Yes**. (The certificate is named *mitmproxy*, after the proxy engine.)
 
-Then load the extension:
-1. Open `chrome://extensions` and switch on **Developer mode**.
-2. Click **Load unpacked** and choose the `extension` folder. Its ID is fixed: `pnjeplpjeabpbgocpngafpeecglaalgi`.
-3. Click the extension icon. The popup should show **Desktop agent: connected** and **Image OCR: available**.
+## Usage
 
-On install, the extension also injects itself into ChatGPT/Perplexity tabs that were already open. Refreshing
-those tabs once is the most reliable option, and after **reloading** the extension during development a refresh is
-required (the old page script loses its connection and blocks, with an in-page message saying so).
+```bash
+run.bat               # or: .venv\Scripts\python.exe dlp_guard.py
+```
 
----
+- A blue padlock shield appears in the system tray. While the app runs, Windows proxy settings point the browser at
+  it (through PAC).
+- **Start the app before opening ChatGPT/Perplexity**, or reload those tabs, so the browser uses the proxy for them.
+- **Quit** from the tray icon (or press Ctrl+C). Proxy settings are restored automatically. After a crash they are
+  restored on the next start, or with `uninstall.bat`.
+- Options: `--color`, `--port`, `--pac-port`, `--no-system-proxy` (point a browser at `127.0.0.1:8899` manually),
+  `--no-tray`.
 
-## Try it
+Try it with the files in `samples/`. Each sensitive file has a clean twin:
+`secret_note.txt`, `secret_report.pdf`, `secret_scanned.pdf`, `secret_screenshot.png`, `secret_dark_mode.jpg`.
 
-`samples/` has a sensitive file and a clean twin for each type (regenerate them with `python scripts\make_samples.py`):
-
-| File | Expected |
-|---|---|
-| `secret_note.txt`, `secret_report.pdf` | Dialog (found in the text) |
-| `secret_scanned.pdf` | Dialog (found by OCR of the scanned page) |
-| `secret_screenshot.png`, `secret_dark_mode.jpg` | Dialog (found by OCR) |
-| `clean_note.txt`, `clean_report.pdf`, `clean_screenshot.png` | Uploads normally, no dialog |
-
-Prompt test: type `Summarise this WALLED_SENSITIVE report in one line` and press Enter.
+**To uninstall:** `uninstall.bat` restores proxy settings and removes the certificate.
 
 ---
 
 ## Security and reliability
 
-- **Fails closed:** if the agent is missing, crashes or times out, an error occurs, or the dialog is
-  closed/ignored, the result is **block**. The dialog's default button is Cancel.
-- **Privacy:** everything runs locally, and no content leaves the machine for scanning. The agent's log records
+- **Fails closed.** Errors during inspection, an unanswered dialog (it auto-cancels after 2 minutes; Cancel is the
+  default button) or unscannable files all result in Cancel or a question, never a silent allow.
+- **Local only.** Content is inspected on the machine; nothing is sent anywhere for scanning. The log stores
   **metadata only** (site, file name, size, decision), never prompt text or file contents.
-- **Narrow trust:** the native host accepts only this extension's ID. Native Messaging uses stdin/stdout, so no
-  open network port.
-- **Clean protocol channel:** stdout is reserved for Native Messaging framing, and stray prints are redirected to
-  stderr. A test drives the real `.bat` launcher Chrome uses, to catch any stray output.
-- **Concurrency:** each request is handled on its own thread and replies are matched by id, so a slow OCR scan
-  never delays other checks. In the page, files are checked one at a time so dialogs don't pile up.
-- **Large files:** files over 40 MB are not inlined through Chrome; the user is asked instead.
+- **Narrow scope.** The PAC routes only the AI sites and their storage to the app. TLS is decrypted only for those
+  hosts. The CA's private key stays in the user's profile and is removed by `--uninstall`.
+- **Safe on exit.** The previous proxy setting is backed up before changing it, restored on quit and `atexit`, and
+  recovered on the next start after a crash.
+- **Concurrency.** The proxy is asyncio-based. Held requests don't block other traffic, OCR runs in worker threads,
+  and dialogs are shown one at a time.
 
 ---
 
 ## Testing
 
 ```bash
-pip install -r requirements-dev.txt
-python -m pytest -v            # 38 Python tests
-node --test tests/js/extension.test.mjs   # 10 JavaScript tests
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.venv\Scripts\python.exe -m pytest -v
 ```
 
 | Suite | Covers |
 |---|---|
-| `test_scanner.py` | Marker variants, text/PDF/scanned PDF/OCR images, dark mode, Office files, corrupt and unknown files, detection by content |
-| `test_host.py` | The real agent over the Native Messaging protocol: ping, clean vs sensitive prompts, Continue vs Cancel, files, oversize files, bad input fails closed, concurrent requests, the actual `.bat` launcher |
-| `test_dialog.py` | The real native dialog times out to **Cancel** |
-| `extension.test.mjs` | Shared matcher; `page_hook.js` in a simulated page: clean requests pass, marker requests held and then blocked or allowed, grants, GET ignored, FormData files, XHR block/allow |
+| `test_proxy.py` | The real mitmproxy addon on real flow objects: clean prompt passes, Cancel → 403, Continue forwards unchanged, Perplexity, one dialog for concurrent duplicates, retry after Cancel asks again, side requests follow the decision, PDF/OCR/clean uploads, learned storage host + file name, other sites untouched, HTML recolouring, CSP nonce, streamed answers, WebSocket suggestions dropped |
+| `test_policy.py` | Host and submit-path rules, PAC, JSON/form/multipart/raw body parsing, upload-target learning, CSS injection |
+| `test_scanner.py` | Marker variants, text/PDF/scanned PDF/image OCR, dark mode, Office files, corrupt and unknown files |
+| `test_dialog.py` | The real native dialog auto-cancels on timeout |
 
-The tests answer the dialog through `WALLED_DLP_AUTO_DECISION=continue|cancel`, so they run without clicks.
+Tests answer the dialog with a fake, or with `WALLED_DLP_AUTO_DECISION=continue|cancel`, so they need no clicks.
+The proxy was also verified live against chatgpt.com and perplexity.ai.
 
 ---
 
 ## Project layout
 
 ```
+dlp_guard.py         Entry point: --setup / run / --uninstall, tray, PAC, system proxy
 agent/
-  host.py        Native Messaging host: request loop, one thread per check, decisions
-  protocol.py    4-byte length + JSON framing (Chrome's format)
-  scanner.py     Marker detection: text, PDF (+OCR), images (OCR), Office XML
-  dialog.py      Native Windows Continue/Cancel (MessageBox + CBT hook to rename buttons)
-  tray.py        Tray icon with check counts
-  logger.py      File + stderr logging, metadata only
-extension/
-  manifest.json  MV3; fixed key, so the ID is stable for the native host allow-list
-  background.js  Service worker: Native Messaging bridge, fails closed, injects into open tabs
-  content.js     Layer 1 interception, file screening, in-page status, response colouring
-  page_hook.js   Layer 2 fetch/XHR backstop (page world, document_start)
-  common.js      Shared marker matcher
-  popup.html/js  Agent status, OCR status, colour picker
-scripts/
-  install.py     Register/unregister the native host (Chrome + Edge)
-  make_samples.py  Generate demo files
-samples/         Sensitive files and clean twins
-tests/           pytest + node:test
+  dlp_proxy.py       mitmproxy addon: hold, classify, decide, block/forward, recolour, WebSocket filter
+  policy.py          Pure rules: sites, submit paths, PAC, body parsing, upload learning, CSS
+  scanner.py         Marker detection: text, PDF (+OCR), images (OCR), Office XML
+  dialog.py          Native Windows Continue/Cancel (MessageBox; buttons renamed via CBT hook)
+  system.py          Local CA (certutil), PAC server, Windows proxy settings backup/restore
+  tray.py            Tray icon with counts and Quit
+  logger.py          Metadata-only logging
+setup.bat / run.bat / uninstall.bat
+samples/             Sensitive files and clean twins     scripts/make_samples.py
+tests/               pytest suites
 ```
 
 ---
 
-## Limitations and future work
+## Limitations and trade-offs
 
-- **Windows-first:** the native dialog uses user32 and the installer writes the Windows registry. The agent
-  falls back to a Tk dialog elsewhere, and macOS/Linux would need the manifest copied into the browser's
-  `NativeMessagingHosts` folder (not tested).
-- **Chromium browsers only** (Chrome, Edge). Firefox would need its own manifest format.
-- **Site changes:** ChatGPT and Perplexity change their markup often. Selectors are kept in one place per site,
-  and the network backstop still catches marker requests if the UI layer misses them, but recolouring would need
-  a selector update.
-- **Not covered by the network backstop:** data a site sends over WebSockets or from Web Workers (layer 1 still
-  intercepts the user's Enter/Send/attach actions in those cases).
-- **Marker only:** detection is the single marker requested. Natural next steps are PII/secret detectors (emails,
-  keys, card numbers), central policy, and an audit log for administrators.
+- **Needs a trusted local certificate.** Inspecting HTTPS requires decrypting it, so the user must trust the app's
+  CA once. Browsers that use their own certificate store (Firefox, by default) need it imported separately.
+- **Windows-first.** The native dialog, certificate install and proxy settings use Windows APIs. The scanner and
+  proxy core are cross-platform.
+- **Site changes.** Submit paths and answer selectors are kept in one place per site (`agent/policy.py`). If
+  ChatGPT/Perplexity change them, the side-request rule still drops marker traffic (fail closed), but the
+  recolouring or the prompt classification would need an update.
+- **Block response.** On Cancel the site receives a `403` it didn't expect, so it shows its own error message. On
+  ChatGPT the text stays in the box; on Perplexity the user re-types or edits it.
+- **Already-open connections.** A tab opened before the app started may keep a direct connection until reloaded.
+- **Marker only.** Detection is the single marker requested. Next steps would be PII/secret detectors, central
+  policy, and an audit log.

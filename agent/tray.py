@@ -1,4 +1,4 @@
-"""Optional system-tray icon: shows the agent is running and how many checks it has done."""
+"""System-tray icon: shows the app is running, how many checks it has done, and Quit."""
 
 import logging
 import os
@@ -6,6 +6,7 @@ import sys
 import threading
 import webbrowser
 from pathlib import Path
+from typing import Callable
 
 from PIL import Image, ImageDraw
 
@@ -22,14 +23,15 @@ def _icon_image(color=(37, 99, 235, 255)) -> Image.Image:
 
 
 class Tray:
-    def __init__(self, log_path: Path):
+    def __init__(self, log_path: Path, on_quit: Callable[[], None]):
         self.log_path = log_path
+        self.on_quit = on_quit
         self.checks = 0
         self.flagged = 0
         self._icon = None
 
     def title(self) -> str:
-        return f"Walled DLP Guard - {self.checks} checks, {self.flagged} flagged"
+        return f"Walled DLP Guard - protecting ChatGPT & Perplexity ({self.flagged} flagged / {self.checks} checks)"
 
     def start(self) -> None:
         import pystray
@@ -37,6 +39,7 @@ class Tray:
         menu = pystray.Menu(
             pystray.MenuItem(lambda _i: self.title(), None, enabled=False),
             pystray.MenuItem("Open log", lambda: self.open_log()),
+            pystray.MenuItem("Quit (restores proxy settings)", lambda: self.on_quit()),
         )
         self._icon = pystray.Icon("walled-dlp-guard", _icon_image(), self.title(), menu)
         threading.Thread(target=self._icon.run, name="tray", daemon=True).start()
