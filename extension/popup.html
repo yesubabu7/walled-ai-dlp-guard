@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 13px/1.5 system-ui, sans-serif; width: 260px; margin: 12px; color: #111; }
+    h1 { font-size: 15px; margin: 0 0 8px; }
+    .row { display: flex; justify-content: space-between; align-items: center; margin: 6px 0; }
+    .ok { color: #166534; font-weight: 600; } .bad { color: #991b1b; font-weight: 600; }
+    small { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Walled DLP Guard</h1>
+  <div class="row"><span>Desktop agent</span><span id="agent">checking...</span></div>
+  <div class="row"><span>Image OCR</span><span id="ocr">-</span></div>
+  <div class="row"><label for="color">AI response colour</label><input id="color" type="color"></div>
+  <small>Watching ChatGPT and Perplexity for <b>WALLED_SENSITIVE</b>.</small>
+  <script src="popup.js"></script>
+</body>
+</html>

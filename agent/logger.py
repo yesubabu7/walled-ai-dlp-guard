@@ -1,0 +1,27 @@
+"""Logging to logs/agent.log and stderr.
+
+stdout is the Chrome native-messaging channel, so nothing may ever be logged there.
+As a DLP tool we log metadata only (site, kind, file name, size, decision) - never the
+prompt text or file contents.
+"""
+
+import logging
+import sys
+from pathlib import Path
+
+LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+
+def setup_logging(level: int = logging.INFO) -> logging.Logger:
+    LOG_DIR.mkdir(exist_ok=True)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s [%(process)d] %(name)s: %(message)s")
+    root = logging.getLogger("walled_dlp")
+    root.setLevel(level)
+    if not root.handlers:
+        file_handler = logging.FileHandler(LOG_DIR / "agent.log", encoding="utf-8")
+        file_handler.setFormatter(fmt)
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setFormatter(fmt)
+        root.addHandler(file_handler)
+        root.addHandler(stderr_handler)
+    return root
