@@ -93,51 +93,80 @@ def start_pac_server(port: int, script: str) -> ThreadingHTTPServer:
 
 # --------------------------------------------------------------------------- system proxy
 
-def _refresh_wininet() -> None:
+# The proxy settings are changed through the documented WinINet API (the same call the Windows
+# Settings app makes), not by writing the registry: security suites commonly lock the
+# "Internet Settings" registry key against direct writes.
+
+INTERNET_OPTION_PER_CONNECTION_OPTION = 75
+INTERNET_OPTION_SETTINGS_CHANGED = 39
+INTERNET_OPTION_REFRESH = 37
+PER_CONN_FLAGS, PER_CONN_PROXY_SERVER, PER_CONN_PROXY_BYPASS, PER_CONN_AUTOCONFIG_URL = 1, 2, 3, 4
+PROXY_TYPE_DIRECT, PROXY_TYPE_AUTO_PROXY_URL = 0x1, 0x4
+
+
+def _wininet_options(values: dict[int, object] | None = None) -> dict[int, object]:
+    """Query (values=None) or set the LAN connection's proxy options."""
     import ctypes
+    from ctypes import wintypes
 
-    wininet = ctypes.windll.wininet
-    wininet.InternetSetOptionW(None, 39, None, 0)  # INTERNET_OPTION_SETTINGS_CHANGED
-    wininet.InternetSetOptionW(None, 37, None, 0)  # INTERNET_OPTION_REFRESH
+    class _Value(ctypes.Union):
+        _fields_ = [("dwValue", wintypes.DWORD), ("pszValue", wintypes.LPWSTR), ("ftValue", wintypes.FILETIME)]
 
+    class _Option(ctypes.Structure):
+        _fields_ = [("dwOption", wintypes.DWORD), ("Value", _Value)]
 
-def _read(name: str):
-    import winreg
+    class _List(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("pszConnection", wintypes.LPWSTR), ("dwOptionCount", wintypes.DWORD),
+                    ("dwOptionError", wintypes.DWORD), ("pOptions", ctypes.POINTER(_Option))]
 
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS) as key:
-        try:
-            return winreg.QueryValueEx(key, name)[0]
-        except FileNotFoundError:
-            return None
+    keys = list(values) if values is not None else [PER_CONN_FLAGS, PER_CONN_AUTOCONFIG_URL,
+                                                       PER_CONN_PROXY_SERVER, PER_CONN_PROXY_BYPASS]
+    options = (_Option * len(keys))()
+    for i, key in enumerate(keys):
+        options[i].dwOption = key
+        if values is not None:
+            if key == PER_CONN_FLAGS:
+                options[i].Value.dwValue = int(values[key])
+            else:
+                options[i].Value.pszValue = values[key]
+    lst = _List(ctypes.sizeof(_List), None, len(keys), 0, options)
+    wininet = ctypes.WinDLL("wininet", use_last_error=True)
+    size = wintypes.DWORD(ctypes.sizeof(lst))
+    if values is None:
+        ok = wininet.InternetQueryOptionW(None, INTERNET_OPTION_PER_CONNECTION_OPTION, ctypes.byref(lst), ctypes.byref(size))
+    else:
+        ok = wininet.InternetSetOptionW(None, INTERNET_OPTION_PER_CONNECTION_OPTION, ctypes.byref(lst), size)
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    if values is not None:
+        wininet.InternetSetOptionW(None, INTERNET_OPTION_SETTINGS_CHANGED, None, 0)
+        wininet.InternetSetOptionW(None, INTERNET_OPTION_REFRESH, None, 0)
+        return values
+    return {key: (options[i].Value.dwValue if key == PER_CONN_FLAGS else options[i].Value.pszValue)
+            for i, key in enumerate(keys)}
 
 
 def enable_pac(url: str) -> None:
-    import winreg
-
     if not BACKUP.exists():  # keep the oldest backup if a previous run crashed
         BACKUP.parent.mkdir(parents=True, exist_ok=True)
-        BACKUP.write_text(json.dumps({"AutoConfigURL": _read("AutoConfigURL")}), encoding="utf-8")
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS, 0, winreg.KEY_SET_VALUE) as key:
-        winreg.SetValueEx(key, "AutoConfigURL", 0, winreg.REG_SZ, url)
-    _refresh_wininet()
+        current = _wininet_options()
+        BACKUP.write_text(json.dumps({"wininet": {str(k): v for k, v in current.items()}}), encoding="utf-8")
+    _wininet_options({PER_CONN_FLAGS: PROXY_TYPE_DIRECT | PROXY_TYPE_AUTO_PROXY_URL, PER_CONN_AUTOCONFIG_URL: url})
     log.info("system proxy: PAC %s", url)
 
 
 def restore_proxy() -> None:
     if sys.platform != "win32" or not BACKUP.exists():
         return
-    import winreg
-
-    previous = json.loads(BACKUP.read_text(encoding="utf-8")).get("AutoConfigURL")
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS, 0, winreg.KEY_SET_VALUE) as key:
-        if previous:
-            winreg.SetValueEx(key, "AutoConfigURL", 0, winreg.REG_SZ, previous)
-        else:
-            try:
-                winreg.DeleteValue(key, "AutoConfigURL")
-            except FileNotFoundError:
-                pass
-    _refresh_wininet()
+    saved = json.loads(BACKUP.read_text(encoding="utf-8")).get("wininet")
+    if saved:
+        previous = {int(k): v for k, v in saved.items()}
+        _wininet_options({PER_CONN_FLAGS: previous.get(PER_CONN_FLAGS) or PROXY_TYPE_DIRECT,
+                          PER_CONN_AUTOCONFIG_URL: previous.get(PER_CONN_AUTOCONFIG_URL) or "",
+                          PER_CONN_PROXY_SERVER: previous.get(PER_CONN_PROXY_SERVER) or "",
+                          PER_CONN_PROXY_BYPASS: previous.get(PER_CONN_PROXY_BYPASS) or ""})
+    else:  # backup from an earlier version that failed before changing anything
+        log.info("discarding stale proxy backup")
     BACKUP.unlink()
     log.info("system proxy restored")
 
