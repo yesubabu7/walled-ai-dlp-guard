@@ -220,9 +220,11 @@ class DlpAddon:
 
     @staticmethod
     def _block(flow: http.HTTPFlow, reason: str) -> None:
+        # Sites show either "detail" or "error" from an error body, so both carry the message.
+        message = f"Blocked by Walled DLP Guard: {reason}"
         flow.response = http.Response.make(
             403,
-            json.dumps({"detail": f"Blocked by Walled DLP Guard: {reason}", "error": "blocked_by_dlp"}),
+            json.dumps({"detail": message, "error": message, "message": message}),
             {"content-type": "application/json", "cache-control": "no-store"},
         )
 
