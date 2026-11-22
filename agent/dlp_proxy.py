@@ -40,6 +40,7 @@ from agent.policy import (
     site_by_key,
     site_for,
 )
+from agent.recent import find_recent_file
 from agent.scanner import MARKER, contains_marker, normalize, scan_file
 
 log = logging.getLogger("walled_dlp.proxy")
@@ -152,6 +153,8 @@ class DlpAddon:
         name = self.upload_names.get(f"{host}{req.path.split('?', 1)[0]}")
         if name is None and upload_site is not None:
             name = self._announced_name(site.key, len(body))
+        if name is None and upload_site is not None and body:
+            name = await asyncio.to_thread(find_recent_file, body)
         payload = inspect_request(host, req.path, req.method, req.headers.get("content-type", ""),
                                   body, is_upload_host=upload_site is not None, file_name=name)
 
@@ -293,6 +296,7 @@ class DlpAddon:
         if nonce:
             tagged = tagged.replace('<style id="walled-dlp-style">', f'<style id="walled-dlp-style" nonce="{nonce}">', 1)
         flow.response.set_text(tagged)
+        log.info("%s: recolour style added to %s", site.name, flow.request.path.split("?")[0])
 
     # ------------------------------------------------------------------ WebSockets
 

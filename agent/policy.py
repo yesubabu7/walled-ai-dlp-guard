@@ -167,7 +167,8 @@ def inspect_request(host: str, path: str, method: str, content_type: str, body: 
         text, files = parse_multipart(body, content_type)
         return Payload(text, files)
     if is_upload_host or FILE_TYPES.search(ctype) or (not TEXT_TYPES.search(ctype) and _binary(body)):
-        name = file_name or unquote_plus(urlsplit(path).path.rsplit("/", 1)[-1]) or "uploaded file"
+        last = unquote_plus(urlsplit(path).path.rsplit("/", 1)[-1])
+        name = file_name or (last if "." in last else "") or "uploaded file (name not provided by the site)"
         return Payload("", [UploadedFile(name, content_type, body)])
     text, strings = decode_text(body, content_type)
     return Payload(text, strings=strings)
