@@ -31,6 +31,7 @@ from agent.policy import (
     UPLOAD_HOSTS,
     Site,
     UploadedFile,
+    announced_file,
     inject_style,
     inspect_request,
     learn_upload_targets,
@@ -114,6 +115,7 @@ class DlpAddon:
         self.decisions = Decisions()
         self.learned_hosts: dict[str, str] = {}   # storage host -> site key
         self.upload_names: dict[str, str] = {}    # host+path -> original file name
+        self.announced: list[tuple[str, str, int | None, float]] = []  # (site, name, size, when)
 
     # ------------------------------------------------------------------ which traffic
 
@@ -148,6 +150,8 @@ class DlpAddon:
 
         body = req.get_content(strict=False) or b""
         name = self.upload_names.get(f"{host}{req.path.split('?', 1)[0]}")
+        if name is None and upload_site is not None:
+            name = self._announced_name(site.key, len(body))
         payload = inspect_request(host, req.path, req.method, req.headers.get("content-type", ""),
                                   body, is_upload_host=upload_site is not None, file_name=name)
 
@@ -218,6 +222,13 @@ class DlpAddon:
         self._count(True)
         return allowed
 
+    def _announced_name(self, site_key: str, size: int) -> str | None:
+        """Name for an upload whose URL doesn't reveal it: the file the site announced with this size."""
+        recent = [a for a in self.announced if a[0] == site_key and time.monotonic() - a[3] < 300]
+        same_size = [a for a in recent if a[2] == size]
+        match = (same_size or recent)[-1:] or []
+        return match[0][1] if match else None
+
     @staticmethod
     def _block(flow: http.HTTPFlow, reason: str) -> None:
         # Sites show either "detail" or "error" from an error body, so both carry the message.
@@ -260,8 +271,12 @@ class DlpAddon:
         if site.pages.search(host) and "text/html" in ctype and flow.response.status_code == 200:
             self._recolour(flow, site)
         elif "json" in ctype:
-            hosts, names = learn_upload_targets(flow.request.get_content(strict=False) or b"",
-                                                flow.response.get_content(strict=False) or b"")
+            request_body = flow.request.get_content(strict=False) or b""
+            name, size = announced_file(request_body)
+            if name:
+                self.announced = [a for a in self.announced if time.monotonic() - a[3] < 300][-20:]
+                self.announced.append((site.key, name, size, time.monotonic()))
+            hosts, names = learn_upload_targets(request_body, flow.response.get_content(strict=False) or b"")
             for h in hosts:
                 if h not in self.learned_hosts:
                     log.info("%s: learned upload host %s", site.name, h)

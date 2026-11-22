@@ -176,6 +176,26 @@ def test_learned_upload_host_and_file_name(samples):
     assert "secret_note.txt" in dialog.calls[0][1] and "ChatGPT" in dialog.calls[0][1]
 
 
+def test_file_name_from_announcement_when_url_hides_it(samples):
+    """ChatGPT uploads to .../raw; the real name comes from the size it announced."""
+    dialog = FakeDialog(False)
+    addon = DlpAddon(ask=dialog)
+    note = (samples / "secret_note.txt").read_bytes()
+    create = flow("POST", "https://chatgpt.com/backend-api/files",
+                  json.dumps({"file_name": "secret_note.txt", "file_size": len(note), "use_case": "my_files"}).encode(),
+                  {"content-type": "application/json"})
+    create.response = http.Response.make(
+        200, json.dumps({"file_id": "file_1", "upload_url": "https://sdmntprindia.oaiusercontent.com/files/file_1?sig=1"}),
+        {"content-type": "application/json"})
+    addon.response(create)
+
+    put = flow("PUT", "https://sdmntprindia.oaiusercontent.com/files/file_1/raw?sv=1", note,
+               {"content-type": "text/plain", "origin": "https://chatgpt.com"})
+    run(addon.request(put))
+    assert put.response.status_code == 403
+    assert "File: secret_note.txt" in dialog.calls[0][1]
+
+
 def test_other_sites_never_inspected():
     dialog = FakeDialog(False)
     addon = DlpAddon(ask=dialog)

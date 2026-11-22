@@ -189,17 +189,32 @@ def prompt_text(payload: "Payload", limit: int = 300) -> str:
 
 URL_RE = re.compile(r"https://([A-Za-z0-9.-]+)(/[^\"'\\\s?]*)?")
 NAME_KEYS = ("file_name", "filename", "fileName", "name")
+SIZE_KEYS = ("file_size", "fileSize", "size", "content_length", "file_size_bytes")
+
+
+def announced_file(request_body: bytes) -> tuple[str | None, int | None]:
+    """The (file name, size) a site announces when it asks for an upload URL, searched anywhere in the JSON."""
+    try:
+        data = json.loads(request_body or b"{}")
+    except ValueError:
+        return None, None
+    stack = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            name = next((node[k] for k in NAME_KEYS if isinstance(node.get(k), str) and "." in node[k]), None)
+            if name:
+                size = next((node[k] for k in SIZE_KEYS if isinstance(node.get(k), int)), None)
+                return name, size
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return None, None
 
 
 def learn_upload_targets(request_body: bytes, response_body: bytes) -> tuple[set[str], dict[str, str]]:
     """From a site's 'create upload' exchange, the storage hosts and URL-path -> file name."""
-    name = None
-    try:
-        data = json.loads(request_body or b"{}")
-        if isinstance(data, dict):
-            name = next((str(data[k]) for k in NAME_KEYS if data.get(k)), None)
-    except ValueError:
-        pass
+    name, _size = announced_file(request_body)
     hosts: set[str] = set()
     names: dict[str, str] = {}
     for host, path in URL_RE.findall(response_body.decode("utf-8", errors="ignore")):
