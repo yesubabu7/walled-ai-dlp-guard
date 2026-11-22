@@ -10,7 +10,11 @@ local HTTPS proxy, the same way enterprise DLP agents do.
 
 ![Native Continue / Cancel dialog](docs/native_dialog.png)
 
-> **Demo video:** _link added after recording_ · Built for the Walled AI take-home assignment (screening round 2).
+> **Demo video (4.5 min):** https://youtu.be/Y5aXaT88or4
+> Shows that no browser extension is installed, then on both ChatGPT and Perplexity: clean prompts pass, prompts and
+> text/PDF/image files containing the marker show the native dialog before sending, Cancel blocks, Continue proceeds,
+> clean files pass, and AI answers are recoloured.
+> Built for the Walled AI take-home assignment (screening round 2).
 
 ---
 
